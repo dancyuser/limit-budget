@@ -1,0 +1,19 @@
+node_modules/
+dist/
+release/
+*.log
+.codex-sessions/
+
+# Локальные данные и отчёты: в них бывают проценты использования и тариф
+*.sqlite
+*.sqlite-*
+smoke/
+data-sources.generated.md
+.env
+.env.*
+
+# Редакторы и ОС
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

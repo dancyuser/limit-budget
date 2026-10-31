@@ -1,0 +1,34 @@
+{
+  "name": "limit-budget",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Плавающий виджет Windows: бюджетирование лимитов Claude (позже Codex) по рабочему расписанию",
+  "license": "MIT",
+  "author": "dancyuser",
+  "homepage": "https://github.com/dancyuser/limit-budget#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/dancyuser/limit-budget.git" },
+  "bugs": { "url": "https://github.com/dancyuser/limit-budget/issues" },
+  "engines": { "node": ">=22.13" },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @limit-budget/app",
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p packages/app --noEmit",
+    "test": "vitest run",
+    "start": "npm run build && electron packages/app/dist/main.js",
+    "start:proxy": "npm run build && electron packages/app/dist/main.js --proxy 10808",
+    "demo": "npm run build && electron packages/app/dist/main.js --demo",
+    "smoke": "npm run build && electron packages/app/dist/main.js --demo --smoke",
+    "cli": "node packages/app/dist/cli.js",
+    "dist": "npm run build && npm run dist -w @limit-budget/app"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

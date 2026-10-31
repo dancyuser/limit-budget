@@ -1,0 +1,40 @@
+name: Сообщить об ошибке
+description: Что-то работает не так или показывает неверные числа
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Не прикладывайте cookie, токены и содержимое `%APPDATA%\LimitBudget`. Отчёт шага 0 перед публикацией просмотрите: в нём есть ваши проценты и тариф.
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: Установщик или коммит, например 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Как запущено
+      options:
+        - Установщик из Releases
+        - Из исходников (npm start)
+        - Демо-режим
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Что произошло и что ожидалось
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как воспроизвести
+  - type: textarea
+    id: extra
+    attributes:
+      label: Дополнительно
+      description: Прокси (да/нет), версия Windows, строки из «Применить и проверить» в настройках прокси

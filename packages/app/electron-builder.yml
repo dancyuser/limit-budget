@@ -1,0 +1,27 @@
+# Упаковка: установщик Windows (NSIS). Код уже собран esbuild в dist/, node_modules внутрь не попадают.
+appId: local.limitbudget.widget
+productName: LimitBudget
+electronVersion: 45.2.1
+directories:
+  output: ../../release
+  buildResources: build
+files:
+  - dist/**/*
+  - '!dist/**/*.map'
+  - package.json
+asar: true
+compression: normal
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.png
+  # Подпись кода не настроена: установщик не подписан, SmartScreen покажет предупреждение.
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: Виджет лимитов
