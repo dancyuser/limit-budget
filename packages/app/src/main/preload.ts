@@ -38,6 +38,7 @@ const api: Api = {
   },
   openDashboard: (tab) => invoke('dashboard:open', tab),
   runSpike: () => invoke('spike:run'),
+  openDataFolder: () => invoke('data:open'),
   getProxy: () => invoke('proxy:get'),
   testProxy: () => invoke('proxy:test'),
   testSound: (k) => invoke('sound:test', k),

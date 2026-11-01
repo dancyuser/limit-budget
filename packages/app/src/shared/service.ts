@@ -112,7 +112,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
 const POLL_TIMEOUT_MS = 30_000;
 /** Паузы между повторами после временного сбоя связи, секунды; дальше действует обычный интервал опроса. */
 export const RETRY_STEPS_SEC = [5, 10, 20, 30];
-const LABELS: Record<ProviderId, string> = { claude: 'Claude', chatgpt: 'ChatGPT / Codex' };
+const LABELS: Record<ProviderId, string> = { claude: 'Claude', chatgpt: 'ChatGPT Desktop (Codex)' };
 const KEEP_TICKS_MS = 35 * DAY;
 
 export interface ServiceOptions {

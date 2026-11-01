@@ -1,6 +1,6 @@
 {
   "name": "@limit-budget/app",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "Виджет лимитов Claude / Codex (Electron + TypeScript)",
   "main": "dist/main.js",

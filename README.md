@@ -5,7 +5,7 @@
 
 Плавающий виджет для Windows. Показывает остаток лимитов Claude (Pro) и подсказывает, **сколько процентов 5-часового окна можно потратить прямо сейчас**,
 чтобы уложиться в недельный лимит. Расчёт идёт по вашему рабочему расписанию: по умолчанию пн–пт, 10:00–14:00 и 15:00–19:00 в UTC+3 (меняется в настройках).
-Поддержка Codex в ChatGPT Desktop заложена в архитектуре (отдельный адаптер), но пока работает только на тестовых данных.
+Лимиты **ChatGPT Desktop (Codex)** тоже можно показывать: они читаются из локальных логов приложения, входа не нужно (включается в настройках, по умолчанию выключено).
 
 > **English in short.** A Windows always-on-top widget (Electron + TypeScript) that reads your Claude Pro usage limits and tells you how much of the current 5-hour window you can spend
 > without exhausting the weekly limit, based on your own working schedule. It has a stats dashboard, anomaly detection for limit changes, sounds, a SOCKS5/HTTP proxy setting and a CLI.

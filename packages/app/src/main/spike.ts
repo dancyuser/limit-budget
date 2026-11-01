@@ -131,7 +131,7 @@ async function claudeSection(d: SpikeDeps, summary: string[]): Promise<string> {
 }
 
 function codexSection(summary: string[]): string {
-  let md = '## Codex в ChatGPT Desktop (без реализации)\n\n';
+  let md = '## ChatGPT Desktop (Codex): локальные логи\n\n';
   const dir = process.env.CODEX_HOME ? join(process.env.CODEX_HOME, 'sessions') : join(homedir(), '.codex', 'sessions');
   if (!existsSync(dir)) {
     summary.push('Codex: каталог rollout-логов не найден');

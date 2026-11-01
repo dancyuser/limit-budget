@@ -94,6 +94,8 @@ export interface Api {
   };
   openDashboard(tab?: string): Promise<void>;
   runSpike(): Promise<SpikeResult>;
+  /** Открыть в проводнике папку с настройками, базой и отчётами шага 0. */
+  openDataFolder(): Promise<void>;
   getProxy(): Promise<ProxyInfo>;
   testProxy(): Promise<ProxyTestResult>;
   testSound(kind: string): Promise<void>;

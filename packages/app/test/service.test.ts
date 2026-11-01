@@ -319,7 +319,7 @@ describe('задел под Codex: провайдер chatgpt на фиксту�
     const store = new Store(':memory:');
     cleanup.push(() => store.close());
     const claude = new FakeProvider(() => []);
-    const codex = new ChatGptProvider(new StaticRolloutSource(() => codexRolloutFixture(clock.now)), { source: 'codex-fixture' });
+    const codex = new ChatGptProvider(new StaticRolloutSource(() => codexRolloutFixture(clock.now)), { source: 'codex-fixture', now: () => clock.now });
     const service = new UsageService({ store, providers: [claude, codex], clock: () => clock.now });
     expect(service.getViewState().providers.find((p) => p.id === 'chatgpt')?.status).toBe('disabled');
     service.updateSettings({ providers: { chatgpt: { enabled: true } } });

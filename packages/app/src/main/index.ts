@@ -31,6 +31,7 @@ import {
   type UsageProvider,
 } from '@limit-budget/core';
 import { ChatGptProvider, StaticRolloutSource } from '../providers/chatgpt.js';
+import { CodexRolloutSource } from '../providers/codexFiles.js';
 import { ClaudeProvider } from '../providers/claude.js';
 import { codexRolloutFixture } from '../providers/fixtures.js';
 import { Store } from '../shared/db.js';
@@ -198,7 +199,7 @@ async function networkReport(): Promise<{ lines: string[]; summary: string }> {
       `Связь с claude.ai: ${describeTest(t)}`,
       ...(t.windows?.length ? [`Открытые окна claude.ai: ${t.windows.map((w) => `${w.kind} ${w.host} → ${w.proxy}`).join('; ')}`] : []),
     ],
-    summary: `Сеть: прокси ${info.display}; ${describeTest(t)}${t.reachable ? '' : '. Задайте порт: трей → «Настроить прокси (порт)…»'}`,
+    summary: `Сеть: прокси ${info.display}; ${describeTest(t)}${t.reachable ? '' : '. Задайте порт: настройки → «Сеть и прокси»'}`,
   };
 }
 
@@ -214,7 +215,10 @@ function makeClock(): () => number {
 }
 
 function buildProviders(clock: () => number): UsageProvider[] {
-  const codex = new ChatGptProvider(new StaticRolloutSource(() => codexRolloutFixture(clock())), { source: 'codex-fixture' });
+  // Демо живёт на виртуальных часах и обезличенных фикстурах; настоящий запуск читает локальные логи Codex.
+  const codex = DEMO
+    ? new ChatGptProvider(new StaticRolloutSource(() => codexRolloutFixture(clock())), { source: 'codex-fixture', now: clock })
+    : new ChatGptProvider(new CodexRolloutSource(), { source: 'codex-rollout', now: clock });
   if (DEMO) {
     const start = clock() - 14 * DAY;
     const sim = new UsageSimulator({
@@ -469,19 +473,9 @@ function buildTrayMenu(): Menu {
       },
     },
     { type: 'separator' },
-    { label: `Прокси: ${describeProxy(currentProxy.proxy)}`, enabled: false },
-    { label: 'Настроить прокси (порт)…', click: () => openDashboard('settings:proxy') },
-    {
-      label: 'Проверить связь с claude.ai',
-      click: () => {
-        void testConnection().then((r) => dialog.showMessageBox({ type: r.reachable ? 'info' : 'warning', title: 'Связь с claude.ai', message: describeTest(r), detail: `Прокси: ${describeProxy(currentProxy.proxy)}\nChromium выбирает: ${r.resolved}` }));
-      },
-    },
+    // Проверка связи, вход через Claude Desktop, другой способ входа, шаг 0 и папка данных живут во вкладке «Настройки» дашборда.
+    { label: `Прокси: ${describeProxy(currentProxy.proxy)}…`, click: () => openDashboard('settings:proxy') },
     { label: 'Войти в Claude…', click: () => claudeSession?.openLogin() },
-    { label: 'Войти через Claude Desktop…', click: () => void runDesktopImport() },
-    { label: 'Вход: другой способ…', click: () => openLoginHelp() },
-    { label: 'Шаг 0: спайк источников данных', click: () => void doSpike() },
-    { label: 'Открыть папку данных', click: () => void shell.openPath(app.getPath('userData')) },
     { type: 'separator' },
     { label: 'Выход', click: () => app.quit() },
   ]);
@@ -508,13 +502,6 @@ async function doSpike() {
 // Автоматически — только если включено настройкой (desktopSessionFallback, выключена по умолчанию) и не чаще
 // раза в 6 часов. По явному нажатию кнопки («Через Claude Desktop…») работает всегда, без этих ограничений —
 // нажатие кнопки само по себе и есть согласие на попытку.
-
-/** Ручной запуск из трея: как нажатие кнопки в окне входа, только с итогом в диалоге. */
-async function runDesktopImport(): Promise<void> {
-  if (!claudeSession) return;
-  const r = await claudeSession.importFromDesktop().catch((e) => ({ ok: false, message: (e as Error).message, cloudflare: false }));
-  await dialog.showMessageBox({ type: r.ok ? 'info' : 'warning', title: 'Вход через Claude Desktop', message: r.message });
-}
 
 async function tryDesktopFallback(): Promise<void> {
   if (!claudeSession || !service.settings.desktopSessionFallback) return;
@@ -556,6 +543,8 @@ function registerIpc(): void {
     const proxyChanged = patch && typeof patch === 'object' && 'proxy' in patch;
     if (proxyChanged) parseProxy((patch as { proxy: string | null }).proxy);
     const next = service.updateSettings(patch);
+    // Включили провайдера (например, ChatGPT Desktop): данные нужны сразу, а не через минуту.
+    if (patch && typeof patch === 'object' && 'providers' in patch) void service.pollNow();
     // Ключ запуска и переменная окружения важнее настроек: тогда сохранённое значение просто ждёт своего часа.
     if (proxyChanged && currentProxy.source === 'settings') {
       await applyProxy({ proxy: parseProxy(next.proxy), source: 'settings', raw: next.proxy ?? '' });
@@ -614,6 +603,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('dashboard:open', (_e, tab?: string) => openDashboard(tab));
   ipcMain.handle('spike:run', () => doSpike());
+  ipcMain.handle('data:open', async () => void (await shell.openPath(app.getPath('userData'))));
   ipcMain.handle('sound:test', (_e, kind: string) => {
     const event: SignalEvent = {
       kind: kind as SignalEvent['kind'],
@@ -712,6 +702,7 @@ async function runSmoke(): Promise<void> {
     await shot(widget, '02-widget-expanded');
     report.widgetBounds = widget?.getBounds();
     report.widgetText = await exec(widget, `document.body.innerText`);
+    report.trayMenu = buildTrayMenu().items.map((i) => (i.type === 'separator' ? '—' : i.label));
     // --smoke-offline: связь пропала (как после гибернации) → виджет показывает ошибку и кнопку «Обновить»;
     // связь вернулась → нажатие кнопки снова приносит данные, ошибка и кнопка уходят.
     if (argv.includes('--smoke-offline')) {

@@ -105,7 +105,7 @@ describe('ChatGPT / Codex: контрактные тесты на обезлич
   const lines = codexRolloutFixture(NOW);
 
   it('находит последние rate_limits и различает окна по длине', async () => {
-    const p = new ChatGptProvider(new StaticRolloutSource(() => lines));
+    const p = new ChatGptProvider(new StaticRolloutSource(() => lines), { now: () => NOW });
     const snaps = await p.poll();
     expect(snaps.find((s) => s.window === '5h')?.usedPct).toBe(31);
     expect(snaps.find((s) => s.window === '7d')?.usedPct).toBe(29);
@@ -118,14 +118,14 @@ describe('ChatGPT / Codex: контрактные тесты на обезлич
       type: 'event_msg',
       payload: { type: 'token_count', rate_limits: { secondary: { used_percent: 12, window_minutes: 10080, resets_in_seconds: 86_400 } } },
     });
-    const snaps = await new ChatGptProvider(new StaticRolloutSource(() => [weeklyOnly])).poll();
+    const snaps = await new ChatGptProvider(new StaticRolloutSource(() => [weeklyOnly]), { now: () => NOW }).poll();
     expect(snaps).toHaveLength(1);
     expect(snaps[0].window).toBe('7d');
     expect(snaps[0].resetsAt?.getTime()).toBe(NOW + 86_400_000);
   });
 
   it('если записей rate_limits нет, адаптер сообщает об этом', async () => {
-    await expect(new ChatGptProvider(new StaticRolloutSource(() => ['{"type":"noise"}', 'не json'])).poll()).rejects.toBeInstanceOf(ShapeError);
+    await expect(new ChatGptProvider(new StaticRolloutSource(() => ['{"type":"noise"}', 'не json']), { now: () => NOW }).poll()).rejects.toBeInstanceOf(ShapeError);
   });
 
   it('форма реальных логов: последняя запись с limit_id и окнами null пропускается, берётся ближайшая с окнами', async () => {
@@ -155,8 +155,71 @@ describe('ChatGPT / Codex: контрактные тесты на обезлич
     expect(parsed.plan).toBe('plus');
     expect(parsed.primary).toBeNull();
     const withWindows = lines.filter((l) => l.includes('used_percent'));
-    const snaps = await new ChatGptProvider(new StaticRolloutSource(() => [...withWindows, real])).poll();
+    const snaps = await new ChatGptProvider(new StaticRolloutSource(() => [...withWindows, real]), { now: () => NOW }).poll();
     expect(snaps.find((s) => s.window === '7d')?.usedPct).toBe(29);
+  });
+
+  // Образец настоящей записи (значения со спайка 2026-10-31): основная корзина codex, 5ч 50%, неделя 100%.
+  const rl = (ts: number, limitId: string | null, primary: [number, number] | null, secondary: [number, number] | null) =>
+    JSON.stringify({
+      timestamp: new Date(ts).toISOString(),
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        rate_limits: {
+          ...(limitId ? { limit_id: limitId } : {}),
+          plan_type: 'plus',
+          primary: primary && { used_percent: primary[0], window_minutes: 300, resets_at: primary[1] / 1000 },
+          secondary: secondary && { used_percent: secondary[0], window_minutes: 10080, resets_at: secondary[1] / 1000 },
+        },
+      },
+    });
+  const H = 3_600_000;
+
+  it('запись из лога устарела: окно с прошедшим сбросом считается пустым, а не показывает старые 50%', async () => {
+    // Запись сделана в 15:07, 5-часовое окно сбросилось в 17:15, спрашиваем в 19:46; недельное окно ещё идёт
+    const rec = rl(NOW, 'codex', [50, NOW + 2 * H], [100, NOW + 5 * 24 * H]);
+    const later = NOW + 4.6 * H;
+    const snaps = await new ChatGptProvider(new StaticRolloutSource(() => [rec]), { now: () => later }).poll();
+    const h5 = snaps.find((s) => s.window === '5h')!;
+    expect(h5.usedPct).toBe(0);
+    expect(h5.resetsAt).toBeNull();
+    const d7 = snaps.find((s) => s.window === '7d')!;
+    expect(d7.usedPct).toBe(100);
+    expect(d7.resetsAt?.getTime()).toBe(NOW + 5 * 24 * H);
+  });
+
+  it('недельное окно тоже сбросилось: расход нулевой, следующий сброс — по той же недельной сетке', async () => {
+    const rec = rl(NOW, 'codex', [10, NOW + 3 * H], [80, NOW + 24 * H]);
+    const later = NOW + 24 * H + 3 * 24 * H; // через 3 суток после сброса
+    const d7 = (await new ChatGptProvider(new StaticRolloutSource(() => [rec]), { now: () => later }).poll()).find((s) => s.window === '7d')!;
+    expect(d7.usedPct).toBe(0);
+    expect(d7.resetsAt!.getTime()).toBe(NOW + 24 * H + 7 * 24 * H);
+    expect(d7.resetsAt!.getTime()).toBeGreaterThan(later);
+  });
+
+  it('до сброса значения берутся как есть', async () => {
+    const rec = rl(NOW, 'codex', [50, NOW + 2 * H], [100, NOW + 5 * 24 * H]);
+    const snaps = await new ChatGptProvider(new StaticRolloutSource(() => [rec]), { now: () => NOW + 1 * H }).poll();
+    expect(snaps.find((s) => s.window === '5h')?.usedPct).toBe(50);
+  });
+
+  it('выбирается самая свежая запись основной корзины, даже если она не последняя в потоке строк', () => {
+    const old = rl(NOW - 3 * H, 'codex', [20, NOW], [60, NOW + 5 * 24 * H]);
+    const fresh = rl(NOW, 'codex', [50, NOW + 2 * H], [70, NOW + 5 * 24 * H]);
+    // два параллельных сеанса: свежая запись лежит в более раннем файле
+    expect(latestRateLimits([fresh, old])?.primary?.usedPct).toBe(50);
+    expect(latestRateLimits([old, fresh])?.primary?.usedPct).toBe(50);
+  });
+
+  it('основная корзина важнее чужой: premium с окнами не подменяет codex', () => {
+    const main = rl(NOW - 6 * H, 'codex', [40, NOW], [90, NOW + 5 * 24 * H]);
+    const other = rl(NOW, 'premium', [5, NOW + 4 * H], [5, NOW + 6 * 24 * H]);
+    expect(latestRateLimits([main, other])?.limitId).toBe('codex');
+    // если основной корзины нет вовсе, берётся то, что есть
+    expect(latestRateLimits([other])?.limitId).toBe('premium');
+    // старые логи без limit_id считаются основной корзиной
+    expect(latestRateLimits([rl(NOW, null, [1, NOW + H], null)])?.primary?.usedPct).toBe(1);
   });
 
   it('парсер строки устойчив к мусору', () => {

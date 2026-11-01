@@ -191,7 +191,7 @@ function providerBlock(v: ViewState, p: ProviderView): HTMLElement {
   const block = h('div', { class: 'prov', dataset: { provider: p.id } });
   const chips: Node[] = [];
   if (p.status === 'stale') chips.push(h('span', { class: 'chip warn' }, 'устарело'));
-  if (p.id === 'chatgpt') chips.push(h('span', { class: 'chip' }, 'фикстуры'));
+  if (p.id === 'chatgpt' && api.isDemo) chips.push(h('span', { class: 'chip' }, 'фикстуры'));
   if (v.peak.now) chips.push(h('span', { class: 'chip peak' }, `пик ${v.peak.label ?? ''}`));
   block.append(h('div', { class: 'prov-title' }, h('span', { class: 'name' }, p.label), h('span', {}, ...chips)));
 
