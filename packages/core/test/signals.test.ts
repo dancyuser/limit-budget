@@ -55,9 +55,11 @@ describe('сигналы: один раз за пересечение порог
 
   it('превышение лимита — отдельный сигнал, а не предупреждение', () => {
     const e = new SignalEngine();
-    const events = e.update(ctx({ u5h: 30, u7d: 29.25, now: msk('2026-11-03', '10:00') }));
+    // при мягкой раскладке превышение — это израсходованное 5-часовое окно (или недельный бюджет), а не опережение траектории
+    const events = e.update(ctx({ u5h: 100, u7d: 18, now: msk('2026-11-03', '10:00') }));
     const ex = events.find((x) => x.kind === 'limit-exceeded');
     expect(ex?.severity).toBe('exceeded');
+    expect(ex?.message).toContain('5-часовое окно');
     expect(events.find((x) => x.kind === 'low-available')).toBeUndefined();
   });
 

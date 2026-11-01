@@ -126,10 +126,17 @@ describe('«доступно сейчас» X(t)', () => {
     expect(st.limitedBy).toBe('window');
   });
 
-  it('когда X доходит до нуля, цель на блок выбрана и подаётся превышение', () => {
-    const st = evaluateBudget(input({ u5h: 40, u7d: 27 }), S);
-    expect(st.available).toBe(0);
-    expect(st.exceeded).toBe(true);
+  it('превышение подаётся, когда израсходовано 5-часовое окно или недельный бюджет, а не когда траектория «обогнала» расход', () => {
+    // Перерасход относительно траектории больше не обнуляет X: подробности в блоке «мягкая раскладка»
+    const ahead = evaluateBudget(input({ u5h: 40, u7d: 27 }), S);
+    expect(ahead.available!).toBeGreaterThan(0);
+    expect(ahead.exceeded).toBe(false);
+    const windowFull = evaluateBudget(input({ u5h: 100, u7d: 18 }), S);
+    expect(windowFull.available).toBe(0);
+    expect(windowFull.exceeded).toBe(true);
+    const weekFull = evaluateBudget(input({ u5h: 10, u7d: 90 }), S);
+    expect(weekFull.available).toBe(0);
+    expect(weekFull.exceeded).toBe(true);
   });
 
   it('измеренное k для текущего режима важнее ручного, пик и вне пика отдельно', () => {
@@ -163,6 +170,74 @@ describe('«доступно сейчас» X(t)', () => {
     expect(st.k).toBeNull();
     expect(st.available).toBe(75);
     expect(st.limitedBy).toBe('window');
+  });
+});
+
+describe('мягкая раскладка: расход прошлых дней и часов пересчитывает бюджет оставшихся', () => {
+  // Вторник 10:00: прошло 8 рабочих часов из 40, до конца блока 4 часа, k = 0,15, бюджет недели 90%
+  const at = (u7d: number, over: Partial<BudgetInput> = {}) => evaluateBudget(input({ u5h: 0, u7d, ...over }), S);
+
+  it('перерасход уменьшает бюджет следующих дней поровну, а не обнуляет «доступно сейчас»', () => {
+    const over = at(30); // по плану было бы 18
+    expect(over.rho).toBeCloseTo(60 / 32, 9);
+    expect(over.dayTarget! - 30).toBeCloseTo(15, 9); // сегодня 15 п.п. вместо 18
+    expect(over.blockTarget).toBeCloseTo(30 + (60 / 32) * 4, 9);
+    expect(over.available).toBeCloseTo(((60 / 32) * 4) / 0.15, 9); // 50% окна, а не 0
+    expect(over.limitedBy).toBe('week');
+    expect(over.status).toBe('above'); // выше траектории: предупреждение остаётся
+    expect(over.exceeded).toBe(false);
+  });
+
+  it('недорасход увеличивает бюджет следующих дней, но не даёт потратить накопленное разом', () => {
+    const under = at(8);
+    expect(under.dayTarget! - 8).toBeCloseTo(20.5, 9); // сегодня 20,5 п.п. вместо 18
+    expect(under.available).toBeCloseTo(((82 / 32) * 4) / 0.15, 9); // 68,3% окна
+    expect(under.available!).toBeGreaterThan(at(18).available!); // больше, чем «ровно по плану» (60%)
+    expect(under.available!).toBeLessThan(100); // прежний расчёт по траектории разрешил бы 100% окна
+  });
+
+  it('бюджет дня: больше расход — меньше бюджет, меньше расход — больше', () => {
+    const day = (u: number) => at(u).dayTarget! - u;
+    expect(day(30)).toBeLessThan(day(18));
+    expect(day(18)).toBeCloseTo(18, 9);
+    expect(day(8)).toBeGreaterThan(day(18));
+  });
+
+  it('остаток недели всегда делится целиком: u + ρ·(оставшиеся часы) = 90%', () => {
+    for (const u of [0, 8, 18, 30, 55]) {
+      const st = at(u);
+      expect(u + st.rho! * st.remainingHours).toBeCloseTo(90, 9);
+    }
+  });
+
+  it('«доступно сейчас» монотонно убывает с расходом и становится нулём только при выбранном недельном бюджете', () => {
+    let prev = Infinity;
+    for (const u of [0, 10, 20, 30, 40, 60, 80, 89]) {
+      const a = at(u).available!;
+      expect(a).toBeLessThanOrEqual(prev);
+      expect(a).toBeGreaterThan(0);
+      prev = a;
+    }
+    expect(at(90).available).toBe(0);
+    expect(at(95).available).toBe(0);
+  });
+
+  it('внутри блока раскладка пересчитывается каждый час: выход за траекторию сокращает X, но не до нуля', () => {
+    // Вторник 12:00: на траектории u = 22,5, до конца блока 2 часа → X = 2,25·2/0,15 = 30%
+    const now = msk('2026-11-03', '12:00');
+    expect(at(22.5, { now }).available).toBeCloseTo(30, 9);
+    const over = at(28.5, { now }); // на 6 п.п. выше траектории
+    expect(over.rho).toBeCloseTo(61.5 / 30, 9);
+    expect(over.available).toBeCloseTo(((61.5 / 30) * 2) / 0.15, 9); // ≈ 27,3%
+    expect(over.available!).toBeLessThan(30);
+    expect(over.available!).toBeGreaterThan(0);
+  });
+
+  it('блок следующей недели считается от нуля, как раньше', () => {
+    // Воскресенье вечером: следующий блок уже в новой неделе, расход старой недели ему не мешает
+    const st = evaluateBudget(input({ now: msk('2026-11-08', '20:00'), u5h: 0, u7d: 80 }), S);
+    expect(st.block?.start).toBeGreaterThanOrEqual(R7);
+    expect(st.available).toBeCloseTo(((90 / 40) * 4) / 0.15, 9);
   });
 });
 

@@ -258,7 +258,10 @@ function providerBlock(v: ViewState, p: ProviderView): HTMLElement {
   if (b.windowExhaustsEarly) {
     block.append(h('div', { class: 'notice' }, `5-часовое окно закончится раньше блока: примерно через ${Math.round((b.hoursToExhaust ?? 0) * 60)} мин при текущем темпе.`));
   }
-  if (b.exceeded) block.append(h('div', { class: 'notice bad' }, 'Лимит на этот блок выбран. Дальше расход идёт в резерв недели.'));
+  if (b.exceeded) {
+    const windowFull = b.u5hEffective !== null && b.u5hEffective >= 100;
+    block.append(h('div', { class: 'notice bad' }, windowFull ? '5-часовое окно израсходовано, дождитесь сброса.' : 'Недельный бюджет израсходован. Дальше расход идёт в резерв недели.'));
+  }
 
   const facts = h('div', { class: 'facts' });
   const row = (k: string, val: Node | string, cls = '') => facts.append(h('span', { class: 'k' }, k), h('span', { class: `v ${cls}` }, val));

@@ -1,6 +1,6 @@
 {
   "name": "limit-budget",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Плавающий виджет Windows: бюджетирование лимитов Claude (позже Codex) по рабочему расписанию",
   "license": "MIT",

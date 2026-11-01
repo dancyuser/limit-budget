@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: Версия
-      description: Установщик или коммит, например 0.2.0
+      description: Установщик или коммит, например 0.2.1
     validations:
       required: true
   - type: dropdown

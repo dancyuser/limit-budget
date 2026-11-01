@@ -203,6 +203,11 @@ export function evaluateBudget(input: BudgetInput, s: BudgetSettings): BudgetSta
   base.capacityWindows = kPick ? (1 - s.reserve) / kPick.k : null;
 
   // Недельная цель на конец блока S. Если блок уже в следующей неделе, считаем от нуля нового окна.
+  //
+  // «Мягкая раскладка» в текущей неделе: остаток недельного бюджета делится поровну на оставшиеся рабочие часы (ρ), и
+  // S = u + ρ·(рабочие часы до конца блока). Перерасход поэтому не обнуляет «доступно сейчас», а равномерно уменьшает его
+  // на всех оставшихся блоках недели, а недорасход равномерно увеличивает, не позволяя потратить накопленное разом.
+  // На траектории (u = T) S совпадает с T(конец блока), то есть с прежним расчётом.
   let S: number | null = null;
   let u7ForBlock = u7d;
   let u5ForBlock = u5hEff;
@@ -212,6 +217,8 @@ export function evaluateBudget(input: BudgetInput, s: BudgetSettings): BudgetSta
       S = targetAt(s.schedule, nextWeek, blk.end, s.reserve);
       u7ForBlock = 0;
       u5ForBlock = input.r5h !== null && input.r5h <= blk.start ? 0 : u5hEff;
+    } else if (base.rho !== null && u7d !== null) {
+      S = u7d + Math.max(0, base.rho) * weightedHours(s.schedule, now, Math.min(blk.end, week.end));
     } else {
       S = targetAt(s.schedule, week, blk.end, s.reserve);
     }
@@ -248,7 +255,7 @@ export function evaluateBudget(input: BudgetInput, s: BudgetSettings): BudgetSta
     base.notEnough = base.hoursLeft < base.remainingHours;
   }
 
-  // Превышение: блок исчерпан (X = 0 внутри блока) либо недельный расход дошёл до недельной цели 100·(1 − r).
+  // Превышение: X = 0 внутри блока (при мягкой раскладке это израсходованное 5-часовое окно) либо недельный расход дошёл до недельной цели 100·(1 − r).
   const blockSpent = !!base.block?.inBlock && base.available !== null && base.available <= 0;
   const weekSpent = u7d !== null && u7d >= budgetPct;
   base.exceeded = blockSpent || weekSpent;

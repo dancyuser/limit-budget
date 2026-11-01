@@ -99,8 +99,8 @@ export class SignalEngine {
       [
         'limit-exceeded',
         b.exceeded,
-        b.available !== null && b.available <= 0
-          ? 'Лимит на этот блок исчерпан: «доступно сейчас» = 0'
+        b.u5hEffective !== null && b.u5hEffective >= 100
+          ? '5-часовое окно израсходовано: «доступно сейчас» = 0'
           : 'Недельный расход дошёл до цели',
       ],
       [
