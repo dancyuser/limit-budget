@@ -87,6 +87,38 @@ function proxyLink(): HTMLElement {
   return h('span', { class: 'link', dataset: { testid: 'proxy-link' }, onclick: (e: Event) => (e.stopPropagation(), void api.openDashboard('settings:proxy')) }, 'Настроить прокси');
 }
 
+// --- обновление: кнопка, повтор после сбоя, возвращение сети -----------------------------------
+
+let refreshing = false;
+
+/** Опросить сейчас. Пока идёт опрос, кнопки неактивны, чтобы не запускать второй. */
+async function refreshNow(): Promise<void> {
+  if (refreshing) return;
+  refreshing = true;
+  schedule();
+  try {
+    await api.refresh();
+  } finally {
+    refreshing = false;
+    schedule();
+  }
+}
+
+function refreshButton(label: string): HTMLButtonElement {
+  return h(
+    'button',
+    { class: refreshing ? 'refresh spin' : 'refresh', title: 'Обновить сейчас', disabled: refreshing, dataset: { testid: 'refresh' }, onclick: (e: Event) => (e.stopPropagation(), void refreshNow()) },
+    refreshing ? '…' : label,
+  ) as HTMLButtonElement;
+}
+
+/** «Следующая попытка через N с»: после временного сбоя сервис повторяет опрос сам. */
+function retryNote(p: ProviderView, now: number): string {
+  if (p.retryAt === null) return '';
+  const sec = Math.max(1, Math.round((p.retryAt - now) / 1000));
+  return `Следующая попытка через ${sec} с. `;
+}
+
 // --- компактная строка ---------------------------------------------------------------------
 
 function compactRow(v: ViewState | null): HTMLElement {
@@ -103,7 +135,10 @@ function compactRow(v: ViewState | null): HTMLElement {
   } else if (!p.tick || !p.budget) {
     line.append(p.status === 'error' ? `${p.label}: ${p.error ?? 'ошибка'}` : 'Ожидание данных…');
     if (p.status === 'error' && isNetworkProblem(p.error)) line.append(' ', proxyLink());
-    if (p.status === 'error') dot.classList.add('bad');
+    if (p.status === 'error') {
+      dot.classList.add('bad');
+      row.append(refreshButton('↻'));
+    }
   } else {
     const l = level(p);
     if (l) dot.classList.add(l);
@@ -112,13 +147,15 @@ function compactRow(v: ViewState | null): HTMLElement {
     if (b.mode === 'vacation') parts.push(h('span', { class: 'muted' }, 'Отпуск'));
     if (p.tick.u5h !== null) parts.push(h('span', {}, '5ч ', h('b', {}, pct(b.u5hEffective ?? p.tick.u5h))));
     if (b.available !== null) parts.push(h('span', {}, 'доступно ', h('b', {}, pct(b.available))));
-    parts.push(h('span', {}, 'нед ', h('b', {}, pct(p.tick.u7d)), b.target !== null ? ` / ${pct(b.target)}` : ''));
+    parts.push(h('span', {}, 'нед ', h('b', {}, pct(b.usedWeek ?? p.tick.u7d)), b.target !== null ? ` / ${pct(b.target)}` : ''));
     if (p.status === 'stale') parts.push(h('span', { class: 'muted' }, 'устарело'));
     parts.forEach((part, i) => {
       if (i) line.append(' · ');
       line.append(part);
     });
     if (p.status === 'stale') row.classList.add('stale');
+    // Данные устарели или опрос не удался: рядом сразу есть кнопка «обновить».
+    if (p.status === 'stale' || p.error) row.append(refreshButton('↻'));
   }
   if (v?.peak.now) row.append(h('span', { class: 'badge', title: `Пиковые часы ${v.peak.label ?? ''}` }, '⚡'));
   row.append(h('span', { class: 'chev' }, expanded ? '▴' : '▾'));
@@ -163,10 +200,30 @@ function providerBlock(v: ViewState, p: ProviderView): HTMLElement {
     return block;
   }
   if (!t || !b) {
-    block.append(h('div', { class: p.error ? 'notice bad' : 'small' }, p.error ? `Ошибка: ${p.error}. ` : 'Ожидание первых данных…', p.error && isNetworkProblem(p.error) ? proxyLink() : null));
+    block.append(
+      h(
+        'div',
+        { class: p.error ? 'notice bad' : 'small' },
+        p.error ? `Ошибка: ${p.error}. ${retryNote(p, v.now)}` : 'Ожидание первых данных…',
+        p.error ? refreshButton('↻ Обновить') : null,
+        ' ',
+        p.error && isNetworkProblem(p.error) ? proxyLink() : null,
+      ),
+    );
     return block;
   }
-  if (p.error) block.append(h('div', { class: 'notice' }, `Последний опрос не удался: ${p.error}. Показано последнее значение. `, isNetworkProblem(p.error) ? proxyLink() : null));
+  if (p.error) {
+    block.append(
+      h(
+        'div',
+        { class: 'notice' },
+        `Последний опрос не удался: ${p.error}. Показано последнее значение. ${retryNote(p, v.now)}`,
+        refreshButton('↻ Обновить'),
+        ' ',
+        isNetworkProblem(p.error) ? proxyLink() : null,
+      ),
+    );
+  }
   if (b.mode === 'vacation') block.append(h('div', { class: 'small' }, 'Режим «Отпуск»: цели и сигналы выключены. Статистика продолжает копиться с пометкой.'));
 
   if (t.u5h !== null) {
@@ -184,12 +241,14 @@ function providerBlock(v: ViewState, p: ProviderView): HTMLElement {
   }
   if (t.u7d !== null) {
     const dev = b.deviation;
+    // Если сброс недели уже прошёл, а свежих данных нет, показываем начало новой недели, а не расход прошлой.
+    const u7 = b.usedWeek ?? t.u7d;
     block.append(
       scale({
         label: 'Неделя',
-        value: b.target !== null ? `${pct(t.u7d, 1)} / цель ${pct(b.target, 1)}${dev !== null ? ` (${signed(dev)})` : ''}` : pct(t.u7d, 1),
-        reset: `сброс через ${until(t.r7d ?? b.week.end, v.now)}`,
-        fill: t.u7d,
+        value: b.target !== null ? `${pct(u7, 1)} / цель ${pct(b.target, 1)}${dev !== null ? ` (${signed(dev)})` : ''}` : pct(u7, 1),
+        reset: `сброс через ${until(t.r7d !== null && t.r7d > v.now ? t.r7d : b.week.end, v.now)}`,
+        fill: u7,
         fillClass: b.exceeded ? 'bad' : b.status === 'above' ? 'warn' : '',
         target: b.target !== null ? { at: b.target, band: settings?.deviationPct ?? 5 } : undefined,
       }),
@@ -253,6 +312,7 @@ function card(v: ViewState): HTMLElement {
   const actions = h(
     'div',
     { class: 'actions' },
+    refreshButton('↻'),
     h('button', { onclick: () => void api.openDashboard() }, 'Дашборд'),
     h('button', { title: 'Включить или выключить звуки', onclick: () => void api.updateSettings({ sounds: { muted: !muted } }).then((s) => ((settings = s), schedule())) }, muted ? '🔕 Звук выкл' : '🔔 Звук вкл'),
     h('button', { onclick: () => api.widget.hide(), title: 'Скрыть в трей (вернуть — через значок в трее)' }, 'Скрыть'),
@@ -301,6 +361,8 @@ api.onState((s) => {
   schedule();
 });
 api.onSignal((p) => playSignal(p));
+// Windows сообщил, что сеть вернулась (например, после гибернации): не ждём таймера, опрашиваем сразу.
+window.addEventListener('online', () => void refreshNow());
 
 void (async () => {
   settings = await api.getSettings();

@@ -62,6 +62,23 @@ describe('окно недели берётся из resets_at', () => {
     expect(st.week.end).toBe(R7 + 7 * DAY);
   });
 
+  it('после прошедшего сброса недели расход прошлой недели не считается: нет ложного превышения', () => {
+    // Снимок устарел (например, компьютер спал): неделя сбросилась в понедельник 10:00, сейчас вторник 12:00, а в снимке ещё 56%.
+    const st = evaluateBudget(input({ now: msk('2026-11-10', '12:00'), r7d: R7, u7d: 56 }), S);
+    expect(st.stale).toBe(true);
+    expect(st.usedWeek).toBe(0);
+    expect(st.deviation!).toBeLessThan(0);
+    expect(st.status).not.toBe('above');
+    expect(st.exceeded).toBe(false);
+  });
+
+  it('пока неделя не сбросилась, расход берётся как есть', () => {
+    const st = evaluateBudget(input({ now: msk('2026-11-03', '10:00'), r7d: R7, u7d: 56 }), S);
+    expect(st.stale).toBe(false);
+    expect(st.usedWeek).toBe(56);
+    expect(st.status).toBe('above');
+  });
+
   it('без resets_at берётся календарная неделя пн–вс', () => {
     const st = evaluateBudget(input({ r7d: null }), S);
     expect(st.week.source).toBe('calendar');

@@ -129,6 +129,16 @@ body.widget {
   color: var(--muted);
   font-size: 11px;
 }
+.compact .refresh {
+  padding: 0 6px;
+  height: 22px;
+  line-height: 1;
+  margin-right: 4px;
+}
+button.spin {
+  opacity: 0.6;
+  cursor: progress;
+}
 .compact.stale .line {
   opacity: 0.6;
 }

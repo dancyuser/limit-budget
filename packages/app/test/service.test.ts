@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FakeProvider,
   MINUTE,
@@ -14,7 +14,7 @@ import {
   type UsageProvider,
 } from '@limit-budget/core';
 import { Store } from '../src/shared/db.js';
-import { AuthRequiredError } from '../src/shared/errors.js';
+import { AuthRequiredError, NetworkError, PollTimeoutError, ShapeError } from '../src/shared/errors.js';
 import { UsageService } from '../src/shared/service.js';
 import { ChatGptProvider, StaticRolloutSource } from '../src/providers/chatgpt.js';
 import { codexRolloutFixture } from '../src/providers/fixtures.js';
@@ -198,6 +198,119 @@ describe('сервис опроса', () => {
     expect(opus!.d7d).toBeGreaterThan(0);
     expect(stats.models.reduce((s, m) => s + m.d7d, 0)).toBeCloseTo(stats.totals.gain7d, 6);
   }, 60_000);
+});
+
+describe('повторы после сбоя связи и обновление по требованию', () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** Источник, который отвечает по сценарию: Error — сбой, null — нормальный ответ. Время каждого обращения запоминается. */
+  function scripted(script: (n: number) => Error | null) {
+    const calls: number[] = [];
+    const inner = new FakeProvider(() => [
+      { window: '5h', bucket: 'all', usedPct: 30, resetsAt: new Date(Date.now() + 3 * 3_600_000) },
+      { window: '7d', bucket: 'all', usedPct: 20, resetsAt: new Date(msk('2026-11-09', '10:00')) },
+    ]);
+    const provider: UsageProvider = {
+      id: 'claude',
+      capabilities: inner.capabilities,
+      poll: async () => {
+        calls.push(Date.now());
+        const err = script(calls.length);
+        if (err) throw err;
+        return inner.poll();
+      },
+    };
+    vi.useFakeTimers();
+    vi.setSystemTime(msk('2026-11-03', '10:30'));
+    const store = new Store(':memory:');
+    cleanup.push(() => store.close());
+    const failures: Array<[number, boolean]> = [];
+    const service = new UsageService({ store, providers: [provider], onFailure: (_id, n, transient) => failures.push([n, transient]) });
+    cleanup.push(() => service.stop());
+    const gaps = () => calls.slice(1).map((t, i) => t - calls[i]);
+    return { service, calls, gaps, failures, view: () => service.getViewState().providers[0] };
+  }
+
+  it('нет связи: повторы через 5, 10, 20 и 30 секунд, потом обычный интервал', async () => {
+    const ctx = scripted(() => new NetworkError('Нет связи с claude.ai'));
+    ctx.service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.calls).toHaveLength(1);
+    expect(ctx.view().status).toBe('error');
+    // следующая попытка известна интерфейсу: «повтор через 5 с»
+    expect(ctx.view().retryAt! - Date.now()).toBe(5000);
+    await vi.advanceTimersByTimeAsync(5000 + 10_000 + 20_000 + 30_000 + 60_000);
+    const base = Math.max(10, ctx.service.settings.pollIntervalSec) * 1000;
+    expect(ctx.gaps()).toEqual([5000, 10_000, 20_000, 30_000, base]);
+    // каждый сбой сообщается приложению (оно сбросит соединения на втором)
+    expect(ctx.failures.slice(0, 3)).toEqual([[1, true], [2, true], [3, true]]);
+  });
+
+  it('связь вернулась: ошибка уходит, интервал снова обычный', async () => {
+    const ctx = scripted((n) => (n <= 2 ? new NetworkError('Нет связи с claude.ai') : null));
+    ctx.service.start();
+    await vi.advanceTimersByTimeAsync(5000 + 10_000);
+    expect(ctx.calls).toHaveLength(3);
+    const v = ctx.view();
+    expect(v.status).toBe('ok');
+    expect(v.error).toBeNull();
+    expect(v.failures).toBe(0);
+    expect(v.retryAt).toBeNull();
+    await vi.advanceTimersByTimeAsync(Math.max(10, ctx.service.settings.pollIntervalSec) * 1000);
+    expect(ctx.gaps().at(-1)).toBe(Math.max(10, ctx.service.settings.pollIntervalSec) * 1000);
+  });
+
+  it('таймаут источника тоже считается временным сбоем', async () => {
+    const ctx = scripted((n) => (n === 1 ? new PollTimeoutError('источник не ответил за 30 с') : null));
+    ctx.service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.failures).toEqual([[1, true]]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(ctx.calls).toHaveLength(2);
+  });
+
+  it('нужен вход или другая форма ответа: быстрые повторы не нужны, интервал обычный', async () => {
+    for (const err of [new AuthRequiredError(), new ShapeError('форма не совпала')]) {
+      const ctx = scripted(() => err);
+      ctx.service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.view().retryAt).toBeNull();
+      expect(ctx.failures).toEqual([[1, false]]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(ctx.calls).toHaveLength(1);
+      ctx.service.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('«Обновить»: опрос идёт сразу, а не по таймеру; идущий опрос второй раз не запускается', async () => {
+    const ctx = scripted(() => null);
+    ctx.service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await ctx.service.pollNow();
+    expect(ctx.calls).toHaveLength(2);
+    expect(ctx.calls[1] - ctx.calls[0]).toBe(15_000);
+    // таймер перезапущен от момента обновления, лишнего опроса по старому таймеру нет
+    const base = Math.max(10, ctx.service.settings.pollIntervalSec) * 1000;
+    await vi.advanceTimersByTimeAsync(base - 1);
+    expect(ctx.calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ctx.calls).toHaveLength(3);
+    // два нажатия подряд дают один опрос
+    const a = ctx.service.pollNow();
+    const b = ctx.service.pollNow();
+    await Promise.all([a, b]);
+    expect(ctx.calls).toHaveLength(4);
+  });
+
+  it('без запущенного цикла (CLI, тесты) pollNow делает один круг опроса', async () => {
+    const ctx = scripted(() => null);
+    await ctx.service.pollNow();
+    expect(ctx.calls).toHaveLength(1);
+    expect(ctx.view().status).toBe('ok');
+  });
 });
 
 describe('задел под Codex: провайдер chatgpt на фикстурах', () => {

@@ -10,6 +10,7 @@ const subscribe = <T>(channel: string, cb: (v: T) => void) => {
 
 const api: Api = {
   getState: () => invoke('state:get'),
+  refresh: () => invoke('poll:refresh'),
   onState: (cb) => subscribe('state', cb),
   onSignal: (cb) => subscribe('signal', cb),
   onTab: (cb) => subscribe('dashboard:tab', cb),

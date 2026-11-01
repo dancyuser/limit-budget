@@ -9,6 +9,7 @@ import {
   dialog,
   ipcMain,
   nativeImage,
+  powerMonitor,
   screen,
   session,
   shell,
@@ -33,6 +34,7 @@ import { ChatGptProvider, StaticRolloutSource } from '../providers/chatgpt.js';
 import { ClaudeProvider } from '../providers/claude.js';
 import { codexRolloutFixture } from '../providers/fixtures.js';
 import { Store } from '../shared/db.js';
+import { NetworkError } from '../shared/errors.js';
 import { seedKnownEvents } from '../shared/knownEvents.js';
 import { blocksCsv, daysCsv, modelsCsv, snapshotsCsv } from '../shared/export.js';
 import type { LoginResult, ProxyInfo, ProxyTestResult, SignalPayload } from '../shared/ipc.js';
@@ -88,6 +90,8 @@ let loginHelp: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let claudeSession: ClaudeWebSession | null = null;
 let lastDesktopTry = 0;
+/** Только для проверки: демо-источник отвечает «нет связи» (--smoke-offline). */
+let demoOffline = false;
 let logFile = '';
 
 function log(msg: string): void {
@@ -228,7 +232,13 @@ function buildProviders(clock: () => number): UsageProvider[] {
       { ts: t.ts, provider: 'claude' as const, window: '7d' as const, bucket: 'all' as const, usedPct: t.u7d ?? 0, resetsAt: t.r7d, source: 'demo' },
     ]);
     for (let i = 0; i < rows.length; i += 20000) store.insertSnapshots(rows.slice(i, i + 20000));
-    return [FakeProvider.simulated(sim, clock), codex];
+    const claude = FakeProvider.simulated(sim, clock);
+    const poll = claude.poll.bind(claude);
+    claude.poll = async () => {
+      if (demoOffline) throw new NetworkError('Нет связи с claude.ai: проверьте интернет и настройки прокси');
+      return poll();
+    };
+    return [claude, codex];
   }
   claudeSession = new ClaudeWebSession(log);
   const claude = new ClaudeProvider(claudeSession, {
@@ -406,13 +416,14 @@ function trayColor(view: ViewState): [number, number, number] {
 function updateTray(view: ViewState): void {
   if (!tray) return;
   const p = view.providers.find((x) => x.id === 'claude');
-  const frac = (p?.tick?.u7d ?? 0) / 100;
-  tray.setImage(nativeImage.createFromBuffer(gaugePng(32, frac, trayColor(view))));
   const b = p?.budget;
+  // Если время сброса недели прошло, а свежих данных ещё нет, считаем, что неделя началась заново.
+  const week = b?.usedWeek ?? p?.tick?.u7d ?? 0;
+  tray.setImage(nativeImage.createFromBuffer(gaugePng(32, week / 100, trayColor(view))));
   const fmt = (v: number | null | undefined) => (v === null || v === undefined ? '—' : `${Math.round(v)}%`);
   tray.setToolTip(
     p?.tick
-      ? `Claude · 5ч ${fmt(p.tick.u5h)} · доступно ${fmt(b?.available)} · нед ${fmt(p.tick.u7d)} / ${fmt(b?.target)}${view.mode === 'vacation' ? ' · отпуск' : ''}`
+      ? `Claude · 5ч ${fmt(b?.u5hEffective ?? p.tick.u5h)} · доступно ${fmt(b?.available)} · нед ${fmt(week)} / ${fmt(b?.target)}${view.mode === 'vacation' ? ' · отпуск' : ''}${p.status === 'stale' ? ' · устарело' : ''}`
       : 'Виджет лимитов',
   );
 }
@@ -422,6 +433,7 @@ function buildTrayMenu(): Menu {
   return Menu.buildFromTemplate([
     { label: 'Показать / скрыть виджет', click: () => (widget?.isVisible() ? widget.hide() : widget?.showInactive()) },
     { label: 'Открыть дашборд', click: () => openDashboard() },
+    { label: 'Обновить сейчас', click: () => void manualRefresh() },
     { type: 'separator' },
     {
       label: service.mode === 'vacation' ? 'Режим: Отпуск (вернуться к работе)' : 'Режим: Работа (включить отпуск)',
@@ -513,10 +525,29 @@ async function tryDesktopFallback(): Promise<void> {
   if (r.ok) void service.pollOnce();
 }
 
+// --- обновление и восстановление связи -----------------------------------------------------
+//
+// После сна и гибернации сеть поднимается не сразу, а старые соединения (в том числе через прокси) остаются мёртвыми.
+// Поэтому: при пробуждении соединения сбрасываются и опрос идёт сразу; если связи ещё нет, сервис повторяет опрос
+// через 5, 10, 20 и 30 секунд; кнопка «Обновить» (в виджете и в трее) делает то же самое по требованию.
+
+/** Опросить сейчас; reset закрывает застарелые соединения и перезагружает скрытую страницу claude.ai. */
+async function refreshNow(opts: { reset: boolean }): Promise<void> {
+  if (opts.reset) await claudeSession?.resetConnections().catch(() => {});
+  await service.pollNow();
+}
+
+/** Ручное обновление: соединения сбрасываются только если с данными что-то не так, иначе хватит обычного опроса. */
+function manualRefresh(): Promise<void> {
+  const p = service.getViewState().providers.find((x) => x.id === 'claude');
+  return refreshNow({ reset: !!p && p.enabled && p.status !== 'ok' });
+}
+
 // --- IPC -----------------------------------------------------------------------------------
 
 function registerIpc(): void {
   ipcMain.handle('state:get', () => service.getViewState());
+  ipcMain.handle('poll:refresh', () => manualRefresh());
   ipcMain.handle('settings:get', () => service.settings);
   ipcMain.handle('proxy:get', () => proxyInfo());
   ipcMain.handle('proxy:test', () => testConnection());
@@ -681,6 +712,25 @@ async function runSmoke(): Promise<void> {
     await shot(widget, '02-widget-expanded');
     report.widgetBounds = widget?.getBounds();
     report.widgetText = await exec(widget, `document.body.innerText`);
+    // --smoke-offline: связь пропала (как после гибернации) → виджет показывает ошибку и кнопку «Обновить»;
+    // связь вернулась → нажатие кнопки снова приносит данные, ошибка и кнопка уходят.
+    if (argv.includes('--smoke-offline')) {
+      const snap = async () => {
+        const text = String((await exec(widget, `document.body.innerText`)) ?? '');
+        return { text, hasError: /не удался|Ошибка:/.test(text), refreshButtons: await exec(widget, `document.querySelectorAll('[data-testid=refresh]').length`) };
+      };
+      demoOffline = true;
+      await service.pollOnce();
+      await wait(800);
+      await shot(widget, '07-offline');
+      report.offline = await snap();
+      demoOffline = false;
+      await exec(widget, `document.querySelector('.notice [data-testid=refresh]').click()`);
+      for (let i = 0; i < 20 && (await snap()).hasError; i++) await wait(300);
+      await wait(500);
+      await shot(widget, '08-after-refresh');
+      report.afterRefresh = await snap();
+    }
     openDashboard();
     for (const tab of ['overview', 'models', 'heatmap', 'journal', 'settings']) {
       if (!(await waitFor(dashboard, `[data-tab=${tab}]`))) continue;
@@ -853,7 +903,15 @@ void app.whenReady().then(async () => {
   const clock = makeClock();
   // Проверка входа через cookie в демо-режиме: сессия создаётся, но опроса claude.ai нет.
   if (DEMO && argv.includes('--smoke-claude')) claudeSession = new ClaudeWebSession(log);
-  service = new UsageService({ store, providers: buildProviders(clock), clock });
+  service = new UsageService({
+    store,
+    providers: buildProviders(clock),
+    clock,
+    // Второй временный сбой подряд (и затем каждый шестой): скорее всего, соединения протухли, а не просто нет сети.
+    onFailure: (id, failures, transient) => {
+      if (id === 'claude' && transient && (failures === 2 || failures % 6 === 0)) void claudeSession?.resetConnections();
+    },
+  });
   if (DEMO) service.updateSettings({ providers: { chatgpt: { enabled: true } }, signals: { reminderMinutes: 0 } });
 
   service.on('state', (view) => {
@@ -903,6 +961,15 @@ void app.whenReady().then(async () => {
     // Первый запуск: сразу окно входа, без промежуточной страницы — вход занимает один шаг.
     if (!(await web.hasSessionCookie())) setTimeout(() => void startLoginFlow(web), 1500);
   }
+  powerMonitor.on('resume', () => {
+    log('компьютер проснулся: сбрасываю соединения и обновляю данные');
+    // Сеть поднимается не мгновенно: если за 3 секунды её нет, дальше работают повторы сервиса.
+    setTimeout(() => void refreshNow({ reset: true }), 3000);
+  });
+  powerMonitor.on('unlock-screen', () => {
+    const p = service.getViewState().providers.find((x) => x.id === 'claude');
+    if (p?.enabled && p.status !== 'ok') void refreshNow({ reset: false });
+  });
   service.start();
 });
 

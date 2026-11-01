@@ -61,6 +61,8 @@ export interface SpikeResult {
 /** Интерфейс, который preload отдаёт страницам виджета и дашборда. */
 export interface Api {
   getState(): Promise<ViewState>;
+  /** Опросить сейчас; если с данными что-то не так, сначала сбрасывает застарелые соединения. */
+  refresh(): Promise<void>;
   onState(cb: (s: ViewState) => void): () => void;
   onSignal(cb: (s: SignalPayload) => void): () => void;
   /** Главное окно просит открыть вкладку, например `settings:proxy`. */

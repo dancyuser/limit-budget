@@ -36,7 +36,7 @@ import {
   type UsageStats,
 } from '@limit-budget/core';
 import type { Store, StoredAnomaly, StoredNote } from './db.js';
-import { AuthRequiredError } from './errors.js';
+import { AuthRequiredError, PollTimeoutError, isTransientError } from './errors.js';
 import { budgetSettings, mergeSettings, type AppSettings } from './settings.js';
 
 export type ProviderStatus = 'ok' | 'stale' | 'needs-login' | 'error' | 'waiting' | 'disabled';
@@ -48,6 +48,10 @@ export interface ProviderView {
   capabilities: ProviderCapabilities;
   status: ProviderStatus;
   error: string | null;
+  /** Сколько опросов подряд не удалось. */
+  failures: number;
+  /** Когда будет следующая попытка опроса, если последний сбой временный (нет связи, таймаут); иначе null. */
+  retryAt: number | null;
   lastOkAt: number | null;
   tick: Tick | null;
   budget: BudgetState | null;
@@ -81,6 +85,8 @@ interface Runtime {
   error: string | null;
   needsLogin: boolean;
   failures: number;
+  /** Последний сбой временный (связь, таймаут): повторять опрос скоро. */
+  transient: boolean;
   growingNow: boolean;
   kEst: KEstimate | null;
   speed: number | null;
@@ -98,12 +104,14 @@ interface Runtime {
 function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const limit = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
+    timer = setTimeout(() => reject(new PollTimeoutError(message)), ms);
   });
   return Promise.race([p, limit]).finally(() => clearTimeout(timer));
 }
 
 const POLL_TIMEOUT_MS = 30_000;
+/** Паузы между повторами после временного сбоя связи, секунды; дальше действует обычный интервал опроса. */
+export const RETRY_STEPS_SEC = [5, 10, 20, 30];
 const LABELS: Record<ProviderId, string> = { claude: 'Claude', chatgpt: 'ChatGPT / Codex' };
 const KEEP_TICKS_MS = 35 * DAY;
 
@@ -113,6 +121,8 @@ export interface ServiceOptions {
   clock?: () => number;
   /** Сколько ждать ответа источника, мс (по умолчанию 30 с). */
   pollTimeoutMs?: number;
+  /** Вызывается после каждого неудачного опроса: приложение может сбросить соединения (например, после гибернации). */
+  onFailure?: (provider: ProviderId, failures: number, transient: boolean) => void;
 }
 
 /** Опрос провайдеров, запись в базу, расчёт бюджета и сигналов. Не зависит от Electron. */
@@ -126,10 +136,14 @@ export class UsageService extends EventEmitter<ServiceEvents> {
   private rt = new Map<ProviderId, Runtime>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
+  private inFlight: Promise<void> | null = null;
+  private nextPollAt: number | null = null;
+  private onFailure: ServiceOptions['onFailure'];
 
   constructor(opts: ServiceOptions) {
     super();
     this.store = opts.store;
+    this.onFailure = opts.onFailure;
     this.clock = opts.clock ?? Date.now;
     this.pollTimeoutMs = opts.pollTimeoutMs ?? POLL_TIMEOUT_MS;
     this.settings = this.store.loadSettings();
@@ -146,6 +160,7 @@ export class UsageService extends EventEmitter<ServiceEvents> {
         error: null,
         needsLogin: false,
         failures: 0,
+        transient: false,
         growingNow: false,
         kEst: null,
         speed: null,
@@ -175,21 +190,54 @@ export class UsageService extends EventEmitter<ServiceEvents> {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.nextPollAt = null;
   }
 
   private async loop(): Promise<void> {
     if (!this.running) return;
-    try {
-      await this.pollOnce();
-    } catch (e) {
-      this.emit('log', `poll loop: ${(e as Error).message}`);
-    }
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.nextPollAt = null;
+    const run = (async () => {
+      try {
+        await this.pollOnce();
+      } catch (e) {
+        this.emit('log', `poll loop: ${(e as Error).message}`);
+      }
+    })();
+    this.inFlight = run;
+    await run;
+    if (this.inFlight === run) this.inFlight = null;
     if (!this.running) return;
-    // Пока процент растёт, опрашиваем вдвое чаще: время работы по росту процента получается точнее.
-    const growing = [...this.rt.values()].some((r) => r.growingNow);
+    const { ms, retry } = this.nextDelay();
+    this.nextPollAt = this.clock() + ms;
+    this.timer = setTimeout(() => void this.loop(), ms);
+    // Время повтора известно только сейчас: сообщаем интерфейсу, чтобы он показал «повтор через N с».
+    if (retry) this.emit('state', this.getViewState());
+  }
+
+  /**
+   * Пауза до следующего опроса. После временного сбоя связи повторяем скоро (5, 10, 20, 30 секунд), как мессенджеры при потере сети,
+   * потом возвращаемся к обычному интервалу. Пока процент растёт, опрашиваем вдвое чаще: время работы по росту процента получается точнее.
+   */
+  private nextDelay(): { ms: number; retry: boolean } {
     const base = Math.max(10, this.settings.pollIntervalSec);
-    const delay = (growing ? Math.max(10, Math.round(base / 2)) : base) * 1000;
-    this.timer = setTimeout(() => void this.loop(), delay);
+    const failing = [...this.rt.values()].filter((r) => r.transient && this.settings.providers[r.provider.id]?.enabled);
+    if (failing.length) {
+      const step = RETRY_STEPS_SEC[Math.max(...failing.map((r) => r.failures)) - 1];
+      if (step !== undefined && step < base) return { ms: step * 1000, retry: true };
+    }
+    const growing = [...this.rt.values()].some((r) => r.growingNow);
+    return { ms: (growing ? Math.max(10, Math.round(base / 2)) : base) * 1000, retry: false };
+  }
+
+  /**
+   * Опросить сейчас, не дожидаясь таймера: кнопка «Обновить», пробуждение компьютера, возвращение сети.
+   * Если опрос уже идёт, возвращает его же, а не запускает второй.
+   */
+  pollNow(): Promise<void> {
+    if (!this.running) return this.pollOnce();
+    return this.inFlight ?? this.loop();
   }
 
   /** Один круг опроса всех включённых провайдеров. Публичный: его же используют тесты и CLI. */
@@ -229,9 +277,11 @@ export class UsageService extends EventEmitter<ServiceEvents> {
       rt.error = null;
       rt.needsLogin = false;
       rt.failures = 0;
+      rt.transient = false;
       await this.syncExtras(rt, now);
     } catch (e) {
       rt.failures++;
+      rt.transient = isTransientError(e);
       rt.growingNow = false;
       if (e instanceof AuthRequiredError) {
         rt.needsLogin = true;
@@ -240,6 +290,11 @@ export class UsageService extends EventEmitter<ServiceEvents> {
         rt.error = (e as Error).message;
       }
       this.emit('log', `${rt.provider.id}: ${rt.error}`);
+      try {
+        this.onFailure?.(rt.provider.id, rt.failures, rt.transient);
+      } catch (err) {
+        this.emit('log', `onFailure: ${(err as Error).message}`);
+      }
     }
 
     this.periodic(rt, now, (a) => (newAnomalies = a));
@@ -441,6 +496,8 @@ export class UsageService extends EventEmitter<ServiceEvents> {
       capabilities: rt.provider.capabilities,
       status,
       error: rt.error,
+      failures: rt.failures,
+      retryAt: rt.transient && this.running ? this.nextPollAt : null,
       lastOkAt: rt.lastOkAt,
       tick: last,
       budget,

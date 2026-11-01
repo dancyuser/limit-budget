@@ -144,6 +144,15 @@ export class ClaudeWebSession implements PageFetcher {
     if (this.hidden && !this.hidden.isDestroyed()) await this.hidden.loadURL(`${ORIGIN}/`).catch(() => {});
   }
 
+  /**
+   * Закрыть все соединения сессии и перезагрузить скрытую страницу. После сна и гибернации старые соединения
+   * (особенно через прокси) мертвы, и запросы по ним зависают, а не ошибаются сразу; новые пойдут заново.
+   */
+  async resetConnections(): Promise<void> {
+    await this.ses.closeAllConnections().catch(() => {});
+    await this.reloadPage();
+  }
+
   /** Раз в час перезагружает страницу (это продлевает сессию) и закрепляет cookie на диске. */
   startKeepAlive(): void {
     if (this.keepAlive) return;

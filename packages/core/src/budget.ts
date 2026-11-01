@@ -132,6 +132,8 @@ export function evaluateBudget(input: BudgetInput, s: BudgetSettings): BudgetSta
   // 5-часовое окно, у которого время сброса прошло, считается пустым.
   const u5hEff =
     input.u5h === null ? null : input.r5h !== null && input.r5h <= now ? 0 : input.u5h;
+  // Неделя, у которой время сброса прошло (данные устарели, например после гибернации), началась заново: расход прошлой недели к ней не относится.
+  const u7d = week.rolled && input.u7d !== null ? 0 : input.u7d;
 
   const base: BudgetState = {
     mode: input.mode,
@@ -141,7 +143,7 @@ export function evaluateBudget(input: BudgetInput, s: BudgetSettings): BudgetSta
     a,
     remainingHours: Math.max(0, A - a),
     target: null,
-    usedWeek: input.u7d,
+    usedWeek: u7d,
     deviation: null,
     status: 'off',
     rho: null,
@@ -172,20 +174,20 @@ export function evaluateBudget(input: BudgetInput, s: BudgetSettings): BudgetSta
   const T = A > 0 ? (budgetPct * a) / A : null;
   base.target = T;
 
-  if (input.u7d !== null && T !== null) {
-    base.deviation = input.u7d - T;
+  if (u7d !== null && T !== null) {
+    base.deviation = u7d - T;
     base.status =
-      input.u7d > T + s.deviationPct ? 'above' : input.u7d < T - s.deviationPct ? 'reserve' : 'ok';
+      u7d > T + s.deviationPct ? 'above' : u7d < T - s.deviationPct ? 'reserve' : 'ok';
   } else {
     base.status = 'unknown';
   }
 
   // ρ(t) и D(t): подсказка пересчитывается от фактического расхода и сама гасит перерасход или недорасход.
   base.hoursLeftToday = remainingHoursToday(s.schedule, now, week.end);
-  if (input.u7d !== null && A - a > 1e-9) {
-    const rho = (budgetPct - input.u7d) / (A - a);
+  if (u7d !== null && A - a > 1e-9) {
+    const rho = (budgetPct - u7d) / (A - a);
     base.rho = rho;
-    base.dayTarget = input.u7d + Math.max(0, rho) * base.hoursLeftToday;
+    base.dayTarget = u7d + Math.max(0, rho) * base.hoursLeftToday;
   }
 
   // Блок, относительно которого считается «доступно сейчас»: текущий либо ближайший следующий.
@@ -202,7 +204,7 @@ export function evaluateBudget(input: BudgetInput, s: BudgetSettings): BudgetSta
 
   // Недельная цель на конец блока S. Если блок уже в следующей неделе, считаем от нуля нового окна.
   let S: number | null = null;
-  let u7ForBlock = input.u7d;
+  let u7ForBlock = u7d;
   let u5ForBlock = u5hEff;
   if (blk) {
     if (blk.start >= week.end) {
@@ -241,14 +243,14 @@ export function evaluateBudget(input: BudgetInput, s: BudgetSettings): BudgetSta
   }
 
   // H_left = (100 − u)/v̄: хватит ли недельного остатка при текущем темпе.
-  if (input.u7d !== null && input.speed7d && input.speed7d > 0) {
-    base.hoursLeft = Math.max(0, 100 - input.u7d) / input.speed7d;
+  if (u7d !== null && input.speed7d && input.speed7d > 0) {
+    base.hoursLeft = Math.max(0, 100 - u7d) / input.speed7d;
     base.notEnough = base.hoursLeft < base.remainingHours;
   }
 
   // Превышение: блок исчерпан (X = 0 внутри блока) либо недельный расход дошёл до недельной цели 100·(1 − r).
   const blockSpent = !!base.block?.inBlock && base.available !== null && base.available <= 0;
-  const weekSpent = input.u7d !== null && input.u7d >= budgetPct;
+  const weekSpent = u7d !== null && u7d >= budgetPct;
   base.exceeded = blockSpent || weekSpent;
   return base;
 }

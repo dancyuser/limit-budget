@@ -14,6 +14,19 @@ export class NetworkError extends Error {
   }
 }
 
+/** Источник не ответил за отведённое время: чаще всего связь только поднимается (пробуждение, смена сети). */
+export class PollTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PollTimeoutError';
+  }
+}
+
+/** Временный сбой связи: опрос стоит повторить скоро, не дожидаясь обычного интервала. */
+export function isTransientError(e: unknown): boolean {
+  return e instanceof NetworkError || e instanceof PollTimeoutError;
+}
+
 /** Источник вернул ответ, форма которого не совпала с ожидаемой: адаптер надо поправить после шага 0. */
 export class ShapeError extends Error {
   constructor(message: string) {
