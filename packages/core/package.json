@@ -1,6 +1,6 @@
 {
   "name": "@limit-budget/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Чистое ядро расчёта бюджета лимитов: расписание, T(t), k, X(t), статистика, детектор. Без зависимости от Electron.",
   "type": "module",

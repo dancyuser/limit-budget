@@ -4,12 +4,12 @@
 
 ## Способ 1. Готовый установщик
 
-1. Откройте раздел [Releases](https://github.com/dancyuser/limit-budget/releases/latest) и скачайте `LimitBudget-Setup-0.1.0.exe`.
+1. Откройте раздел [Releases](https://github.com/dancyuser/limit-budget/releases/latest) и скачайте `LimitBudget-Setup-0.1.1.exe`.
 2. Запустите файл. Установщик **не подписан**, поэтому Windows SmartScreen покажет «Windows защитила ваш компьютер»: нажмите «Подробнее» → «Выполнить в любом случае».
    Хотите убедиться, что файл не повреждён и совпадает с выложенным, сверьте контрольную сумму из описания релиза:
 
    ```powershell
-   Get-FileHash .\LimitBudget-Setup-0.1.0.exe -Algorithm SHA256
+   Get-FileHash .\LimitBudget-Setup-0.1.1.exe -Algorithm SHA256
    ```
 
 3. Выберите папку установки (права администратора не нужны, установка идёт в профиль пользователя). В меню «Пуск» появится ярлык «Виджет лимитов».
